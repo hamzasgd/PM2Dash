@@ -1,8 +1,10 @@
 import React, { useState, useMemo, createContext, useEffect } from 'react';
-import { ThemeProvider } from '@mui/material/styles';
+import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { CssBaseline, Box, PaletteMode } from '@mui/material';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useConnection } from './context/ConnectionContext';
+import FingerprintVerifier from './components/FingerprintVerifier';
+import { blue, grey } from '@mui/material/colors';
 
 // Theme
 import theme from './theme';
@@ -25,9 +27,9 @@ export const ColorModeContext = createContext({
 });
 
 // Component that wraps the app content and handles connection checks
-const AppContent: React.FC = () => {
+const AppContent: React.FC<{ toggleTheme: () => void }> = ({ toggleTheme }) => {
   // Get connection state and methods
-  const { checkConnection, refreshConnection, debouncedCheckConnection } = useConnection();
+  const { checkConnection, refreshConnection, debouncedCheckConnection, fingerprintVerificationNeeded, currentFingerprint, isFingerprintChanged, verifyFingerprint, rejectFingerprint } = useConnection();
   
   // Check connection status when app loads
   useEffect(() => {
@@ -50,6 +52,14 @@ const AppContent: React.FC = () => {
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty deps array to run only once at mount, functions accessed via closure
+
+  const handleVerifyFingerprint = async (fingerprint: any) => {
+    await verifyFingerprint(fingerprint);
+  };
+
+  const handleRejectFingerprint = async (host: string, port: number) => {
+    await rejectFingerprint(host, port);
+  };
 
   return (
     <Box sx={{ 
@@ -92,6 +102,15 @@ const AppContent: React.FC = () => {
           <Route path="/terminal" element={<Navigate to="/" replace />} />
         </Routes>
       </Box>
+      
+      {/* Fingerprint verification dialog */}
+      <FingerprintVerifier
+        open={fingerprintVerificationNeeded}
+        fingerprint={currentFingerprint}
+        isChanged={isFingerprintChanged}
+        onVerify={handleVerifyFingerprint}
+        onReject={handleRejectFingerprint}
+      />
     </Box>
   );
 };
@@ -111,12 +130,55 @@ const App: React.FC = () => {
     [mode],
   );
 
+  // Function to set theme mode
+  const toggleTheme = () => {
+    setMode((prevMode) => (prevMode === 'light' ? 'dark' : 'light'));
+  };
+
+  // Create theme based on mode
+  const theme = React.useMemo(
+    () =>
+      createTheme({
+        palette: {
+          mode,
+          primary: {
+            main: blue[700],
+          },
+          background: {
+            default: mode === 'light' ? '#f5f5f5' : grey[900],
+            paper: mode === 'light' ? '#ffffff' : grey[800],
+          },
+        },
+      }),
+    [mode]
+  );
+
+  // Check for saved theme preference
+  useEffect(() => {
+    // Check system preference first
+    const prefersDarkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const savedMode = localStorage.getItem('theme');
+    
+    if (savedMode === 'light' || savedMode === 'dark') {
+      setMode(savedMode);
+    } else if (prefersDarkMode) {
+      setMode('dark');
+    } else {
+      setMode('light');
+    }
+  }, []);
+
+  // Save theme changes to localStorage
+  useEffect(() => {
+    localStorage.setItem('theme', mode);
+  }, [mode]);
+
   return (
     <ColorModeContext.Provider value={colorMode}>
       <ThemeProvider theme={theme}>
         <CssBaseline />
         <Router>
-          <AppContent />
+          <AppContent toggleTheme={toggleTheme} />
         </Router>
       </ThemeProvider>
     </ColorModeContext.Provider>

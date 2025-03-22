@@ -15,6 +15,7 @@ export interface WindowApi {
   connectSSH: (config: SSHConfig) => Promise<{
     success: boolean;
     message?: string;
+    fingerprint?: HostFingerprint;
   }>;
   disconnectSSH: () => Promise<{
     success: boolean;
@@ -25,6 +26,7 @@ export interface WindowApi {
     message?: string;
     error?: any;
     hasPm2?: boolean;
+    fingerprint?: HostFingerprint;
     connectionState?: {
       lastError?: {
         details: string;
@@ -88,6 +90,25 @@ export interface WindowApi {
     message?: string;
   }>;
   
+  // Fingerprint Management
+  saveHostFingerprint: (fingerprint: HostFingerprint) => Promise<{
+    success: boolean;
+    message?: string;
+  }>;
+  getHostFingerprints: () => Promise<{
+    success: boolean;
+    fingerprints: HostFingerprint[];
+    error?: string;
+  }>;
+  deleteHostFingerprint: (host: string) => Promise<{
+    success: boolean;
+    message?: string;
+  }>;
+  
+  // Fingerprint event listeners
+  onFingerprintVerification: (callback: (event: any, data: any) => void) => void;
+  offFingerprintVerification: (callback: (event: any, data: any) => void) => void;
+  
   // Settings functions
   saveSettings: (settings: any) => Promise<{
     success: boolean;
@@ -98,6 +119,7 @@ export interface WindowApi {
     settings: {
       savedConnections: SavedConnection[];
       savedKeys?: SSHKey[];
+      savedFingerprints?: HostFingerprint[];
       theme?: string;
       refreshInterval?: number;
       autoConnect?: boolean;
@@ -127,6 +149,7 @@ export interface SSHConfig {
   password?: string;
   privateKeyId?: string;
   authType: string;
+  allowNewFingerprint?: boolean;
 }
 
 // SSH Key interface
@@ -139,6 +162,18 @@ export interface SSHKey {
   createdAt: Date;
 }
 
+// Host Fingerprint interface
+export interface HostFingerprint {
+  host: string;
+  port: number;
+  hash: string;
+  hashAlgorithm: string;
+  keyType: string;
+  verified: boolean;
+  addedAt: Date;
+  lastSeen?: Date;
+}
+
 // Saved Connection interface
 export interface SavedConnection {
   id: string;
@@ -149,6 +184,7 @@ export interface SavedConnection {
   password?: string;
   privateKeyId?: string;
   authType: string;
+  allowNewFingerprint?: boolean;
 }
 
 // Settings interface to match the one used in Settings.tsx
@@ -158,6 +194,7 @@ export interface Settings {
   defaultConnection: string | null;
   savedConnections?: SavedConnection[];
   savedKeys?: SSHKey[];
+  savedFingerprints?: HostFingerprint[];
   autoConnect?: boolean;
 }
 

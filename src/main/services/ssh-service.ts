@@ -5,6 +5,8 @@ import * as path from 'path';
 import { EventEmitter } from 'events';
 import { getMainWindow } from '../main';
 import * as ssh2 from 'ssh2';
+import * as crypto from 'crypto';
+import settingsService from './settings-service';
 
 interface SSHConnectionState {
   connected: boolean;
@@ -34,6 +36,17 @@ interface SSHConnectionParams {
   password?: string;
 }
 
+interface HostFingerprint {
+  host: string;
+  port: number;
+  hash: string;
+  hashAlgorithm: string;
+  keyType: string;
+  verified: boolean;
+  addedAt: Date;
+  lastSeen?: Date;
+}
+
 class SSHService extends EventEmitter {
   private ssh: NodeSSH | null = null;
   private connectionState: SSHConnectionState = {
@@ -54,6 +67,7 @@ class SSHService extends EventEmitter {
   private clientConnected = false;
   private connectionParams: Partial<SSHConnectionParams> = {};
   private previousConnectionState: boolean | null = null; // Track previous connection state
+  private pendingFingerprint: HostFingerprint | null = null;
   
   constructor() {
     super();
@@ -76,6 +90,10 @@ class SSHService extends EventEmitter {
     
     // Execute command handler
     ipcMain.handle('ssh:executeCommand', this.handleExecuteCommand.bind(this));
+    
+    // Fingerprint verification handlers
+    ipcMain.handle('ssh:verify-fingerprint', this.handleVerifyFingerprint.bind(this));
+    ipcMain.handle('ssh:reject-fingerprint', this.handleRejectFingerprint.bind(this));
   }
   
   // Handler for execute command
@@ -218,7 +236,67 @@ class SSHService extends EventEmitter {
         port: parseInt(sshConfig.port) || 22,
         username: sshConfig.username,
         keepaliveInterval: 10000, // Send keepalive every 10 seconds
-        readyTimeout: 30000 // 30 second timeout
+        readyTimeout: 30000, // 30 second timeout
+        // Add host key verification
+        hostVerifier: async (keyData: Buffer) => {
+          console.log('Host key verification requested');
+          
+          if (sshConfig.allowNewFingerprint === true) {
+            console.log('Automatically accepting new fingerprint (allowNewFingerprint=true)');
+            const { fingerprint } = await this.checkHostFingerprint(
+              sshConfig.host,
+              parseInt(sshConfig.port) || 22,
+              keyData
+            );
+            
+            if (fingerprint) {
+              // Auto-verify and save it
+              fingerprint.verified = true;
+              await this.saveVerifiedFingerprint(fingerprint);
+            }
+            
+            return true;
+          }
+          
+          const { matches, fingerprint, isNew } = await this.checkHostFingerprint(
+            sshConfig.host,
+            parseInt(sshConfig.port) || 22,
+            keyData
+          );
+          
+          if (matches) {
+            console.log('Host key fingerprint matches saved fingerprint');
+            
+            // Update lastSeen
+            if (fingerprint) {
+              fingerprint.lastSeen = new Date();
+              await this.saveVerifiedFingerprint(fingerprint);
+            }
+            
+            return true;
+          } else if (isNew) {
+            console.log('New host key fingerprint, awaiting user verification');
+            
+            // Store the fingerprint and notify the renderer to confirm
+            if (fingerprint) {
+              await this.notifyFingerprintVerification(fingerprint, false);
+            }
+            
+            // Return false to reject connection for now
+            // The user will reconnect after approving the fingerprint
+            return false;
+          } else {
+            console.log('Host key fingerprint CHANGED from saved fingerprint!');
+            
+            // Potential MITM attack - notify user
+            if (fingerprint) {
+              await this.notifyFingerprintVerification(fingerprint, true);
+            }
+            
+            // Return false to reject connection
+            return false;
+          }
+        }
       };
       
       // Add authentication based on type
@@ -654,6 +732,189 @@ class SSHService extends EventEmitter {
     } catch (error) {
       console.error('Error during SSH disconnect:', error);
       throw error;
+    }
+  }
+
+  // Helper to check if a host fingerprint exists and matches
+  private async checkHostFingerprint(host: string, port: number, key: Buffer): Promise<{
+    matches: boolean;
+    fingerprint: HostFingerprint | null;
+    isNew: boolean;
+  }> {
+    try {
+      // Generate fingerprint from the provided key
+      const hash = crypto.createHash('sha256').update(key).digest('base64');
+      const keyType = this.getKeyType(key);
+      
+      console.log(`Generated fingerprint for ${host}:${port}: ${keyType} SHA256:${hash}`);
+      
+      // Check if we have a saved fingerprint for this host:port
+      const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+      if (fs.existsSync(settingsPath)) {
+        const settingsData = fs.readFileSync(settingsPath, 'utf8');
+        const settings = JSON.parse(settingsData);
+        
+        if (settings && settings.savedFingerprints) {
+          const savedFingerprint = settings.savedFingerprints.find(
+            (f: HostFingerprint) => 
+              f.host === host && 
+              f.port === port
+          );
+          
+          if (savedFingerprint) {
+            console.log(`Found saved fingerprint for ${host}:${port}: ${savedFingerprint.keyType} ${savedFingerprint.hashAlgorithm}:${savedFingerprint.hash}`);
+            
+            // Check if fingerprints match
+            const matches = savedFingerprint.hash === hash && savedFingerprint.keyType === keyType;
+            
+            return {
+              matches,
+              fingerprint: savedFingerprint,
+              isNew: false
+            };
+          }
+        }
+      }
+      
+      // No saved fingerprint found or doesn't match, create a new one
+      const newFingerprint: HostFingerprint = {
+        host,
+        port,
+        hash,
+        hashAlgorithm: 'sha256',
+        keyType,
+        verified: false,
+        addedAt: new Date()
+      };
+      
+      return {
+        matches: false,
+        fingerprint: newFingerprint,
+        isNew: true
+      };
+    } catch (error) {
+      console.error('Error checking host fingerprint:', error);
+      return {
+        matches: false,
+        fingerprint: null,
+        isNew: true
+      };
+    }
+  }
+  
+  // Helper to extract key type from key buffer
+  private getKeyType(keyBuf: Buffer): string {
+    // SSH key type is stored at the beginning of the key
+    // This is a simplistic way to determine key type
+    try {
+      const keyString = keyBuf.toString();
+      if (keyString.includes('ssh-rsa')) return 'ssh-rsa';
+      if (keyString.includes('ssh-dss')) return 'ssh-dss';
+      if (keyString.includes('ecdsa')) return 'ecdsa';
+      if (keyString.includes('ssh-ed25519')) return 'ssh-ed25519';
+      return 'unknown';
+    } catch (error) {
+      console.error('Error determining key type:', error);
+      return 'unknown';
+    }
+  }
+  
+  // Helper to save a verified fingerprint
+  private async saveVerifiedFingerprint(fingerprint: HostFingerprint): Promise<boolean> {
+    try {
+      fingerprint.verified = true;
+      
+      // Fix: directly access the settings file instead of using IPC
+      const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+      if (fs.existsSync(settingsPath)) {
+        try {
+          // Read existing settings
+          const settingsData = fs.readFileSync(settingsPath, 'utf8');
+          const settings = JSON.parse(settingsData);
+          
+          // Initialize fingerprints array if needed
+          if (!settings.savedFingerprints) {
+            settings.savedFingerprints = [];
+          }
+          
+          // Update or add the fingerprint
+          const existingIndex = settings.savedFingerprints.findIndex(
+            (f: HostFingerprint) => f.host === fingerprint.host && f.port === fingerprint.port
+          );
+          
+          if (existingIndex >= 0) {
+            settings.savedFingerprints[existingIndex] = fingerprint;
+          } else {
+            settings.savedFingerprints.push(fingerprint);
+          }
+          
+          // Save back to file
+          fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+          return true;
+        } catch (error) {
+          console.error('Error updating settings file:', error);
+          return false;
+        }
+      }
+      return false;
+    } catch (error) {
+      console.error('Error saving verified fingerprint:', error);
+      return false;
+    }
+  }
+  
+  // Notify the renderer of a new fingerprint that needs verification
+  private async notifyFingerprintVerification(fingerprint: HostFingerprint, isChanged: boolean): Promise<void> {
+    try {
+      // Store the pending fingerprint
+      this.pendingFingerprint = fingerprint;
+      
+      // Send message to renderer
+      const mainWindow = getMainWindow();
+      if (mainWindow) {
+        mainWindow.webContents.send('ssh:fingerprint-verification', {
+          fingerprint,
+          isChanged,
+          host: fingerprint.host,
+          port: fingerprint.port
+        });
+      }
+    } catch (error) {
+      console.error('Error notifying fingerprint verification:', error);
+    }
+  }
+
+  // Handler for fingerprint verification
+  private async handleVerifyFingerprint(_: any, fingerprint: HostFingerprint) {
+    try {
+      console.log('User verified host fingerprint:', `${fingerprint.host}:${fingerprint.port}`);
+      
+      // Save the verified fingerprint
+      fingerprint.verified = true;
+      await this.saveVerifiedFingerprint(fingerprint);
+      
+      // Clear pending fingerprint
+      this.pendingFingerprint = null;
+      
+      return { success: true };
+    } catch (error: any) {
+      console.error('Error verifying fingerprint:', error);
+      return { success: false, error: error.message };
+    }
+  }
+  
+  // Handler for fingerprint rejection
+  private async handleRejectFingerprint(_: any, host: string, port: number) {
+    try {
+      console.log('User rejected host fingerprint:', `${host}:${port}`);
+      
+      // Clear pending fingerprint
+      this.pendingFingerprint = null;
+      
+      return { success: true };
+    } catch (error: any) {
+      console.error('Error rejecting fingerprint:', error);
+      return { success: false, error: error.message };
     }
   }
 }

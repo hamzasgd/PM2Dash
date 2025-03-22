@@ -1,15 +1,22 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback, useMemo } from 'react';
 import debounce from 'lodash/debounce';
+import { HostFingerprint } from '../types';
 
-interface ConnectionContextType {
+interface ConnectionContextState {
   connected: boolean;
   lastChecked: number;
-  checkConnection: () => Promise<boolean>;
+  checking: boolean;
+  fingerprintVerificationNeeded: boolean;
+  currentFingerprint: HostFingerprint | null;
+  isFingerprintChanged: boolean;
+  checkConnection: (force?: boolean) => Promise<boolean>;
   refreshConnection: () => Promise<boolean>;
+  verifyFingerprint: (fingerprint: HostFingerprint) => Promise<boolean>;
+  rejectFingerprint: (host: string, port: number) => Promise<boolean>;
   debouncedCheckConnection: (force?: boolean) => void;
 }
 
-const ConnectionContext = createContext<ConnectionContextType | undefined>(undefined);
+const ConnectionContext = createContext<ConnectionContextState | undefined>(undefined);
 
 interface ConnectionProviderProps {
   children: ReactNode;
@@ -19,6 +26,9 @@ export const ConnectionProvider: React.FC<ConnectionProviderProps> = ({ children
   const [connected, setConnected] = useState<boolean>(false);
   const [lastChecked, setLastChecked] = useState<number>(0);
   const [checking, setChecking] = useState<boolean>(false);
+  const [fingerprintVerificationNeeded, setFingerprintVerificationNeeded] = useState<boolean>(false);
+  const [currentFingerprint, setCurrentFingerprint] = useState<HostFingerprint | null>(null);
+  const [isFingerprintChanged, setIsFingerprintChanged] = useState<boolean>(false);
 
   // Check connection status with the server
   const checkConnection = useCallback(async (force = false): Promise<boolean> => {
@@ -65,12 +75,12 @@ export const ConnectionProvider: React.FC<ConnectionProviderProps> = ({ children
         setChecking(false);
       }
     } catch (error) {
-      console.error('[ConnectionContext] Failed to check connection status:', error);
-      setConnected(false);
+      console.error('[ConnectionContext] Error checking connection:', error);
       setChecking(false);
+      setConnected(false);
       return false;
     }
-  }, [connected, lastChecked, checking]);
+  }, [connected, checking, lastChecked]);
 
   // Create debounced version of checkConnection to prevent rapid calls
   const debouncedCheckConnection = useMemo(
@@ -82,46 +92,81 @@ export const ConnectionProvider: React.FC<ConnectionProviderProps> = ({ children
     return checkConnection(true);
   }, [checkConnection]);
 
-  // Initial check and set up event listeners
+  // Handle fingerprint verification
+  const verifyFingerprint = useCallback(async (fingerprint: HostFingerprint): Promise<boolean> => {
+    try {
+      console.log('[ConnectionContext] Verifying fingerprint:', fingerprint);
+      const result = await window.api.saveHostFingerprint(fingerprint);
+      
+      if (result.success) {
+        // Reset fingerprint verification state
+        setFingerprintVerificationNeeded(false);
+        setCurrentFingerprint(null);
+        setIsFingerprintChanged(false);
+        
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('[ConnectionContext] Error verifying fingerprint:', error);
+      return false;
+    }
+  }, []);
+  
+  // Handle fingerprint rejection
+  const rejectFingerprint = useCallback(async (host: string, port: number): Promise<boolean> => {
+    try {
+      console.log('[ConnectionContext] Rejecting fingerprint for:', host, port);
+      
+      // Reset fingerprint verification state
+      setFingerprintVerificationNeeded(false);
+      setCurrentFingerprint(null);
+      setIsFingerprintChanged(false);
+      
+      return true;
+    } catch (error) {
+      console.error('[ConnectionContext] Error rejecting fingerprint:', error);
+      return false;
+    }
+  }, []);
+
+  // Listen for SSH events, including fingerprint verification requests
   useEffect(() => {
-    console.log('[ConnectionContext] Initial connection check...');
-    
-    // Initial connection check - use normal version for first check
+    // Initial connection check
     checkConnection();
     
-    // Set up periodic connection checks (every 30 seconds - increased from 15)
-    const interval = setInterval(() => {
-      debouncedCheckConnection();
-    }, 30000);
-    
-    // Listen for connection change events from main process
-    const handleConnectionChange = (event: Event) => {
-      const customEvent = event as CustomEvent;
-      console.log('[ConnectionContext] Connection event received:', customEvent.detail);
-      const newConnectedState = !!customEvent.detail.connected;
+    // Listen for fingerprint verification requests
+    const handleFingerprintVerification = (_: any, data: any) => {
+      console.log('[ConnectionContext] Fingerprint verification needed:', data);
       
-      // Only update if there's a change to prevent unnecessary re-renders
-      if (connected !== newConnectedState) {
-        console.log(`[ConnectionContext] Setting connection state to: ${newConnectedState ? 'connected' : 'disconnected'}`);
-        setConnected(newConnectedState);
-        setLastChecked(Date.now());
+      if (data && data.fingerprint) {
+        setCurrentFingerprint(data.fingerprint);
+        setIsFingerprintChanged(!!data.isChanged);
+        setFingerprintVerificationNeeded(true);
       }
     };
     
-    window.addEventListener('ssh-connection-change', handleConnectionChange);
+    // Register event listener
+    window.api.onFingerprintVerification(handleFingerprintVerification);
     
+    // Clean up
     return () => {
-      clearInterval(interval);
-      window.removeEventListener('ssh-connection-change', handleConnectionChange);
+      window.api.offFingerprintVerification(handleFingerprintVerification);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkConnection, debouncedCheckConnection]); // Include debouncedCheckConnection in dependencies
+  }, [checkConnection]);
 
   const contextValue = {
     connected,
     lastChecked,
+    checking,
+    fingerprintVerificationNeeded,
+    currentFingerprint,
+    isFingerprintChanged,
     checkConnection,
     refreshConnection,
+    verifyFingerprint,
+    rejectFingerprint,
     debouncedCheckConnection
   };
 
@@ -133,7 +178,7 @@ export const ConnectionProvider: React.FC<ConnectionProviderProps> = ({ children
 };
 
 // Custom hook to use the connection context
-export const useConnection = (): ConnectionContextType => {
+export const useConnection = (): ConnectionContextState => {
   const context = useContext(ConnectionContext);
   if (context === undefined) {
     throw new Error('useConnection must be used within a ConnectionProvider');

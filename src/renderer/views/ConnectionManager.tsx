@@ -29,7 +29,9 @@ import {
   Chip,
   SelectChangeEvent,
   InputLabel,
-  OutlinedInput
+  OutlinedInput,
+  FormControlLabel,
+  Checkbox
 } from '@mui/material';
 import { TabContext, TabList, TabPanel } from '@mui/lab';
 import { 
@@ -56,6 +58,7 @@ interface ConnectionForm {
   password: string;
   privateKeyId?: string;
   authType: 'password' | 'privateKey';
+  allowNewFingerprint?: boolean;
 }
 
 const initialFormState: ConnectionForm = {
@@ -66,6 +69,7 @@ const initialFormState: ConnectionForm = {
   password: '',
   privateKeyId: '',
   authType: 'password',
+  allowNewFingerprint: false,
 };
 
 const ConnectionManager: React.FC = () => {
@@ -213,7 +217,8 @@ const ConnectionManager: React.FC = () => {
         port: parseInt(form.port) || 22,
         username: form.username,
         authType: form.authType,
-        privateKeyId: form.privateKeyId
+        privateKeyId: form.privateKeyId,
+        allowNewFingerprint: form.allowNewFingerprint
       };
       
       console.log('Connecting using:', connectionToUse);
@@ -225,6 +230,7 @@ const ConnectionManager: React.FC = () => {
         port: connectionToUse.port,
         username: connectionToUse.username,
         authType: connectionToUse.authType,
+        allowNewFingerprint: connectionToUse.allowNewFingerprint
       };
       
       // Add authentication credentials
@@ -322,7 +328,8 @@ const ConnectionManager: React.FC = () => {
         username: form.username,
         password: authType === 'password' ? form.password : undefined,
         privateKeyId: authType === 'privatekey' ? form.privateKeyId : undefined,
-        authType: form.authType // Keep original authType for compatibility
+        authType: form.authType, // Keep original authType for compatibility
+        allowNewFingerprint: form.allowNewFingerprint
       };
 
       console.log('Testing connection with config:', { 
@@ -436,7 +443,8 @@ const ConnectionManager: React.FC = () => {
         username: form.username,
         authType: form.authType,
         privateKeyId: form.authType === 'privateKey' ? form.privateKeyId : undefined,
-        password: form.authType === 'password' ? form.password : undefined
+        password: form.authType === 'password' ? form.password : undefined,
+        allowNewFingerprint: form.allowNewFingerprint
       };
 
       console.log("Saving new connection:", { ...newConnection, password: newConnection.password ? '***' : undefined });
@@ -784,6 +792,26 @@ const ConnectionManager: React.FC = () => {
                         )}
                       </FormControl>
                     )}
+
+                    {/* Allow New Fingerprints Option */}
+                    <Grid item xs={12}>
+                      <FormControl fullWidth>
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={form.allowNewFingerprint}
+                              onChange={(e) => setForm({...form, allowNewFingerprint: e.target.checked})}
+                              name="allowNewFingerprint"
+                            />
+                          }
+                          label="Automatically accept new host fingerprints"
+                        />
+                        <FormHelperText>
+                          Enable this for unattended connections, but be aware this reduces security. 
+                          When disabled, you'll be prompted to verify new fingerprints.
+                        </FormHelperText>
+                      </FormControl>
+                    </Grid>
                   </Stack>
                 </Paper>
               </Grid>

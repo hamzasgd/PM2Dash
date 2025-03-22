@@ -13,6 +13,7 @@ interface SavedConnection {
   // Only store paths to private keys or encrypted password hashes if implementing that
   privateKeyPath?: string;
   privateKeyId?: string;
+  allowNewFingerprint?: boolean;
 }
 
 interface SSHKey {
@@ -22,9 +23,21 @@ interface SSHKey {
   createdAt: Date;
 }
 
+interface HostFingerprint {
+  host: string;
+  port: number;
+  hash: string;
+  hashAlgorithm: string;
+  keyType: string;
+  verified: boolean;
+  addedAt: Date;
+  lastSeen?: Date;
+}
+
 interface Settings {
   savedConnections: SavedConnection[];
   savedKeys: SSHKey[];
+  savedFingerprints: HostFingerprint[];
   theme: 'light' | 'dark' | 'system';
   refreshInterval: number; // in seconds
   autoConnect: boolean;
@@ -54,6 +67,7 @@ class SettingsService {
     return {
       savedConnections: [],
       savedKeys: [],
+      savedFingerprints: [],
       theme: 'system',
       refreshInterval: 5,
       autoConnect: false
@@ -160,6 +174,86 @@ class SettingsService {
     ipcMain.handle('ssh:deleteKey', async (_, keyId) => {
       console.log('SSH key delete requested', keyId);
       this.settings.savedKeys = this.settings.savedKeys.filter(key => key.id !== keyId);
+      this.saveSettingsToFile();
+      return { success: true };
+    });
+    
+    // Host Fingerprint Management
+    ipcMain.handle('ssh:saveHostFingerprint', async (_, fingerprint) => {
+      try {
+        console.log('SSH host fingerprint save requested', `${fingerprint.host}:${fingerprint.port}`);
+        
+        // Initialize fingerprints array if not present
+        if (!this.settings.savedFingerprints) {
+          this.settings.savedFingerprints = [];
+        }
+        
+        // Add addedAt timestamp if not present
+        if (!fingerprint.addedAt) {
+          fingerprint.addedAt = new Date();
+        }
+        
+        // Always update lastSeen
+        fingerprint.lastSeen = new Date();
+        
+        // Check if fingerprint for this host:port already exists
+        const existingFingerprintIndex = this.settings.savedFingerprints.findIndex(
+          f => f.host === fingerprint.host && f.port === fingerprint.port
+        );
+        
+        if (existingFingerprintIndex >= 0) {
+          console.log('Updating existing fingerprint for host:', `${fingerprint.host}:${fingerprint.port}`);
+          this.settings.savedFingerprints[existingFingerprintIndex] = fingerprint;
+        } else {
+          console.log('Adding new fingerprint for host:', `${fingerprint.host}:${fingerprint.port}`);
+          this.settings.savedFingerprints.push(fingerprint);
+        }
+        
+        this.saveSettingsToFile();
+        console.log('Fingerprint saved successfully');
+        
+        return { success: true };
+      } catch (error: any) {
+        console.error('Error saving host fingerprint:', error);
+        return { success: false, error: error.message };
+      }
+    });
+    
+    ipcMain.handle('ssh:getHostFingerprints', async () => {
+      console.log('SSH host fingerprints requested');
+      if (!this.settings.savedFingerprints) {
+        this.settings.savedFingerprints = [];
+      }
+      return { success: true, fingerprints: this.settings.savedFingerprints };
+    });
+    
+    ipcMain.handle('ssh:getHostFingerprint', async (_, host, port) => {
+      console.log(`SSH host fingerprint requested for ${host}:${port}`);
+      if (!this.settings.savedFingerprints) {
+        return { success: false, message: 'No fingerprints found' };
+      }
+      
+      const fingerprint = this.settings.savedFingerprints.find(
+        f => f.host === host && f.port === parseInt(port)
+      );
+      
+      if (fingerprint) {
+        return { success: true, fingerprint };
+      } else {
+        return { success: false, message: 'Fingerprint not found' };
+      }
+    });
+    
+    ipcMain.handle('ssh:deleteHostFingerprint', async (_, host, port) => {
+      console.log(`SSH host fingerprint delete requested for ${host}:${port}`);
+      if (!this.settings.savedFingerprints) {
+        return { success: true };
+      }
+      
+      this.settings.savedFingerprints = this.settings.savedFingerprints.filter(
+        f => !(f.host === host && f.port === parseInt(port))
+      );
+      
       this.saveSettingsToFile();
       return { success: true };
     });

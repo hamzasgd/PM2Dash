@@ -10,12 +10,15 @@
     "build": "npm run build:main && npm run build:renderer",
     "build:renderer": "webpack --config webpack.config.js",
     "package": "electron-builder build --publish never",
+    "package:appimage": "electron-builder build --linux AppImage --publish never",
+    "package:deb": "electron-builder build --linux deb --publish never",
+    "package:win": "electron-builder build --win --publish never",
     "postinstall": "electron-builder install-app-deps",
     "start:dev": "concurrently \"webpack serve --config webpack.config.js\" \"npm run dev\""
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Hamza Masood",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@emotion/react": "^11.11.4",
@@ -24,9 +27,6 @@
     "@mui/lab": "^5.0.0-alpha.169",
     "@mui/material": "^5.15.14",
     "axios": "^1.8.4",
-    "electron": "^35.0.3",
-    "electron-builder": "^25.1.8",
-    "electron-is-dev": "^3.0.1",
     "node-ssh": "^13.2.1",
     "pm2": "^6.0.5",
     "react": "^18.2.0",
@@ -52,6 +52,8 @@
     "copy-webpack-plugin": "^13.0.0",
     "cross-env": "^7.0.3",
     "css-loader": "^7.1.2",
+    "electron": "^35.0.3",
+    "electron-builder": "^25.1.8",
     "electron-reload": "^2.0.0-alpha.1",
     "html-webpack-plugin": "^5.6.3",
     "mini-css-extract-plugin": "^2.9.2",
@@ -62,5 +64,34 @@
     "webpack": "^5.98.0",
     "webpack-cli": "^6.0.1",
     "webpack-dev-server": "^5.2.0"
+  },
+  "build": {
+    "appId": "com.pm2dash.app",
+    "productName": "PM2Dash",
+    "files": [
+      "dist/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "asar": false,
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development",
+      "icon": "build/icon.png",
+      "executableName": "pm2dash"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "build/icon.ico"
+    },
+    "appImage": {
+      "license": "LICENSE"
+    },
+    "extraMetadata": {
+      "main": "dist/main/main.js"
+    }
   }
 }

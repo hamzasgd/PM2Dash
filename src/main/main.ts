@@ -1,7 +1,41 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
-import * as isDev from 'electron-is-dev';
 import * as fs from 'fs';
+
+// Define development flag directly instead of using electron-is-dev
+const isDev = !app.isPackaged;
+
+// Log startup information
+console.log('App starting...');
+console.log('App path:', app.getAppPath());
+console.log('User data path:', app.getPath('userData'));
+console.log('Is development:', isDev);
+console.log('Is packaged:', app.isPackaged);
+
+// Interface for system errors with code property
+interface SystemError extends Error {
+  code?: string;
+}
+
+// Handle credentials errors - fix for AppImage permissions issues
+process.on('uncaughtException', (error: SystemError) => {
+  console.error('UNCAUGHT EXCEPTION:', error);
+  try {
+    if (mainWindow) {
+      dialog.showErrorBox('Application Error', 
+        `An error occurred: ${error.message}\n\nPlease restart the application.`);
+    }
+  } catch (dialogError) {
+    console.error('Failed to show error dialog:', dialogError);
+  }
+  
+  // Don't quit - let the app try to continue
+});
+
+// Also log unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
 
 // Declare global mainWindow variable for IPC
 declare global {
@@ -155,100 +189,181 @@ export function getMainWindow(): BrowserWindow | null {
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      preload: path.join(__dirname, '../main/preload.js'),
-      devTools: true
-    },
-  });
-
-  // Always open DevTools
-  mainWindow.webContents.openDevTools();
-
-  // Set event listeners for debugging
-  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-    console.error('Failed to load:', errorCode, errorDescription);
-  });
-
-  // For now, always use the built HTML file
-  const htmlPath = path.join(__dirname, '../renderer/index.html');
-  console.log('Loading HTML from:', htmlPath);
-  
-  // Check if HTML file exists
-  if (fs.existsSync(htmlPath)) {
-    console.log('HTML file exists at:', htmlPath);
-    mainWindow.loadFile(htmlPath);
-  } else {
-    console.error('HTML file not found at:', htmlPath);
+  try {
+    console.log('Creating window...');
+    mainWindow = new BrowserWindow({
+      width: 1200,
+      height: 800,
+      show: false, // Don't show until content is loaded
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, '../main/preload.js'),
+        devTools: isDev // Only enable DevTools in development mode
+      },
+    });
     
-    // Fallback to loading from source directory in case this is a development build without webpack
-    const fallbackPath = path.join(__dirname, '../../src/renderer/index.html');
-    console.log('Trying fallback path:', fallbackPath);
+    console.log('Window created');
     
-    if (fs.existsSync(fallbackPath)) {
-      console.log('Found HTML at fallback path');
-      mainWindow.loadFile(fallbackPath);
-    } else {
-      console.error('HTML file not found at fallback path either');
-      
-      // Create a simple HTML as last resort
-      const tempHtml = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="UTF-8">
-          <title>PM2 GUI Manager</title>
-          <style>
-            body { font-family: Arial; margin: 0; padding: 20px; }
-            h1 { color: #1976d2; }
-            p { margin: 10px 0; }
-            pre { background: #f5f5f5; padding: 10px; border-radius: 4px; }
-          </style>
-        </head>
-        <body>
-          <h1>PM2 GUI Manager</h1>
-          <p>Could not load application HTML files.</p>
-          <p>Current directory: ${__dirname}</p>
-          <p>Attempted paths:</p>
-          <pre>${htmlPath}\n${fallbackPath}</pre>
-        </body>
-        </html>
-      `;
-      
-      // Write temp file and load it
-      const tempPath = path.join(__dirname, 'temp.html');
-      fs.writeFileSync(tempPath, tempHtml);
-      mainWindow.loadFile(tempPath);
+    // Show window when ready to avoid blank flashes
+    mainWindow.once('ready-to-show', () => {
+      console.log('Window ready to show');
+      if (mainWindow) {
+        mainWindow.show();
+      }
+    });
+
+    // Only open DevTools in development mode
+    if (isDev) {
+      mainWindow.webContents.openDevTools();
+      console.log('DevTools opened in development mode');
     }
-  }
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
+    // Set event listeners for debugging
+    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+      console.error('Failed to load:', errorCode, errorDescription);
+      // Handle the error - show a message in the window
+      if (mainWindow) {
+        const errorHTML = `
+          <html>
+          <head>
+            <title>Error Loading Application</title>
+            <style>
+              body { font-family: Arial; padding: 20px; color: #333; }
+              h1 { color: #e74c3c; }
+              .error-code { font-family: monospace; background: #f5f5f5; padding: 10px; }
+            </style>
+          </head>
+          <body>
+            <h1>Failed to Load Application</h1>
+            <p>There was an error loading the application content.</p>
+            <div class="error-code">
+              Error Code: ${errorCode}<br>
+              Description: ${errorDescription}
+            </div>
+            <p>Please try restarting the application.</p>
+          </body>
+          </html>
+        `;
+        mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(errorHTML)}`);
+      }
+    });
+
+    // For now, always use the built HTML file
+    const htmlPath = path.join(__dirname, '../renderer/index.html');
+    console.log('Loading HTML from:', htmlPath);
+    
+    // Check if HTML file exists
+    if (fs.existsSync(htmlPath)) {
+      console.log('HTML file exists at:', htmlPath);
+      try {
+        mainWindow.loadFile(htmlPath);
+        console.log('Loading index.html file');
+      } catch (loadError) {
+        console.error('Error loading index.html:', loadError);
+        throw loadError;
+      }
+    } else {
+      console.error('HTML file not found at:', htmlPath);
+      
+      // Fallback to loading from source directory in case this is a development build without webpack
+      const fallbackPath = path.join(__dirname, '../../src/renderer/index.html');
+      console.log('Trying fallback path:', fallbackPath);
+      
+      if (fs.existsSync(fallbackPath)) {
+        console.log('Found HTML at fallback path');
+        mainWindow.loadFile(fallbackPath);
+      } else {
+        console.error('HTML file not found at fallback path either');
+        
+        // Create a simple HTML as last resort
+        const tempHtml = `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <title>PM2 GUI Manager</title>
+            <style>
+              body { font-family: Arial; margin: 0; padding: 20px; }
+              h1 { color: #1976d2; }
+              p { margin: 10px 0; }
+              pre { background: #f5f5f5; padding: 10px; border-radius: 4px; }
+            </style>
+          </head>
+          <body>
+            <h1>PM2 GUI Manager</h1>
+            <p>Could not load application HTML files.</p>
+            <p>Current directory: ${__dirname}</p>
+            <p>Attempted paths:</p>
+            <pre>${htmlPath}\n${fallbackPath}</pre>
+          </body>
+          </html>
+        `;
+        
+        // Write temp file and load it
+        const tempPath = path.join(__dirname, 'temp.html');
+        fs.writeFileSync(tempPath, tempHtml);
+        mainWindow.loadFile(tempPath);
+      }
+    }
+
+    mainWindow.on('closed', () => {
+      mainWindow = null;
+    });
+  } catch (error) {
+    console.error('Failed to create window:', error);
+  }
 }
 
 // NOTE: All settings, SSH connection and PM2 handlers are now implemented 
 // in the respective service files.
 
+// Handle app ready
 app.whenReady().then(() => {
-  // Load settings before creating window
-  loadSettings();
-  
-  createWindow();
+  console.log('App is ready');
+  try {
+    // Load settings before creating window
+    console.log('Loading settings...');
+    loadSettings();
+    
+    console.log('Creating main window...');
+    createWindow();
+    
+    // Check if window was created successfully
+    if (!mainWindow) {
+      console.error('Failed to create main window');
+      throw new Error('Failed to create main window');
+    }
+    
+  } catch (startupError: unknown) {
+    console.error('Error during startup:', startupError);
+    
+    // Try to show an error dialog even if window creation failed
+    try {
+      const errorMessage = startupError instanceof Error 
+        ? startupError.message 
+        : String(startupError);
+      
+      dialog.showErrorBox('Startup Error', 
+        `Failed to start the application: ${errorMessage}\n\nCheck the logs for more details.`);
+    } catch (dialogError) {
+      console.error('Failed to show error dialog:', dialogError);
+    }
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
+      console.log('Reactivating app, creating window');
       createWindow();
     }
   });
 });
 
+// Handle app quit
 app.on('window-all-closed', () => {
+  console.log('All windows closed');
   if (process.platform !== 'darwin') {
+    console.log('Quitting app');
     app.quit();
   }
 }); 

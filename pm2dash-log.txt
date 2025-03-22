@@ -1,0 +1,1 @@
+./run-pm2dash.sh: line 10: ./release/PM2Dash-1.0.0.AppImage: Text file busy
